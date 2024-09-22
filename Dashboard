@@ -1,0 +1,162 @@
+# imports
+import dash
+from dash import dcc, html
+from dash.dependencies import Input, Output, State
+import datetime as dt
+import yfinance as yf
+import plotly.graph_objs as go
+import pandas as pd
+import numpy as np
+
+app = dash.Dash(__name__, external_stylesheets=[
+    'https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css'
+])
+
+app.layout = html.Div([
+    html.Div([
+        html.H1("Stock Visualization Dashboard", className="text-3xl font-bold mb-4 text-gray-800"),
+        html.Div([
+            dcc.Input(
+                id="ticker-input",
+                type="text",
+                placeholder="Enter a stock ticker",
+                className="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
+            ),
+            html.Button(
+                "Submit",
+                id="submit-button",
+                className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline ml-2"
+            )
+        ], className="flex items-center mb-4"),
+        html.Div(id="error-message", className="text-red-500 mb-4")
+    ], className="container mx-auto px-4 py-8"),
+
+    html.Div([
+        html.Div([
+            dcc.Graph(id="candlestick-graph", className="h-96")
+        ], className="w-full lg:w-1/2 p-2"),
+        html.Div([
+            dcc.Graph(id="volume-graph", className="h-96")
+        ], className="w-full lg:w-1/2 p-2")
+    ], className="flex flex-wrap -mx-2 mb-4"),
+
+    html.Div([
+        dcc.Graph(id="returns-graph", className="h-96")
+    ], className="w-full p-2"),
+
+    dcc.Loading(
+        id="loading",
+        type="default",
+        children=html.Div(id="loading-output")
+    )
+], className="bg-gray-100 min-h-screen")
+
+@app.callback(
+    [Output("candlestick-graph", "figure"),
+     Output("volume-graph", "figure"),
+     Output("returns-graph", "figure"),
+     Output("loading-output", "children"),
+     Output("error-message", "children")],
+    Input("submit-button", "n_clicks"),
+    State("ticker-input", "value")
+)
+def update_graphs(n_clicks, ticker):
+    if ticker is None or ticker.strip() == "":
+        return [go.Figure()] * 3 + [None, "Please enter a ticker symbol."]
+
+    try:
+        df = yf.download(ticker, start="2020-01-01", end="2023-12-31")
+        
+        if df.empty:
+            raise ValueError("No data found for the given ticker.")
+
+        # Candlestick chart
+        candlestick = go.Figure(data=[go.Candlestick(x=df.index,
+                    open=df['Open'],
+                    high=df['High'],
+                    low=df['Low'],
+                    close=df['Close'])])
+        candlestick.update_layout(
+            title=f"{ticker} Stock Price",
+            xaxis_title="Date",
+            yaxis_title="Price",
+            template="plotly_white",
+            margin=dict(l=0, r=0, t=40, b=0)
+        )
+        
+        
+        
+        
+        # Rolling Beta Chart
+        
+        # Download s&p500 data yf
+        sp500 = yf.download('^GSPC', start="2020-01-01", end="2023-12-31")
+        
+        # Calculate daily returns
+        stock_returns = df['Close'].pct_change().dropna()
+        sp500_returns = sp500['Close'].pct_change().dropna()
+        
+        # Ensure the indices match
+        common_dates = stock_returns.index.intersection(sp500_returns.index)
+        stock_returns = stock_returns.loc[common_dates]
+        sp500_returns = sp500_returns.loc[common_dates]
+
+        # Calculate rolling beta
+        rolling_cov = stock_returns.rolling(window=30).cov(sp500_returns)
+        rolling_var = sp500_returns.rolling(window=30).var()
+        rolling_beta = rolling_cov / rolling_var
+
+         # Create line chart
+        rolling_beta_fig = go.Figure()
+    
+        rolling_beta_fig.add_trace(go.Scatter(
+            x=rolling_beta.index,
+            y=rolling_beta,
+            mode='lines',
+            line=dict(color='blue', width=2),
+            name=f'{30}-Day Rolling Beta'
+        ))
+
+        rolling_beta_fig.add_shape(
+            type="line",
+            x0=rolling_beta.index[0],
+            y0=1,
+            x1=rolling_beta.index[-1],
+            y1=1,
+            line=dict(color="red", width=2, dash="dash"),
+        )
+    
+        rolling_beta_fig.update_layout(
+            title=f'{ticker} Rolling Beta to S&P 500',
+            xaxis_title='Date',
+            yaxis_title='Beta',
+            template='plotly_white',
+            showlegend=True
+        )
+
+         
+        
+        # Mean Daily Returns chart
+        df['Returns'] = df['Close'].pct_change()
+        # Calculate the mean daily return for each stock
+        mean_daily_returns = df['Returns'].mean()
+        mean_daily_returns = go.Figure(data=[go.Scatter(x=df.index, y=df['Returns'], mode='lines')])
+        mean_daily_returns.update_layout(
+            title=f"Mean {ticker} Daily Returns",
+            xaxis_title="Date",
+            yaxis_title="Returns",
+            template="plotly_white",
+            margin=dict(l=0, r=0, t=40, b=0)
+        )
+        
+        return candlestick, rolling_beta_fig, mean_daily_returns, None, ""
+
+    
+    
+    
+    except Exception as e:
+        error_message = f"An error occurred: {str(e)}. Please check the ticker symbol and try again."
+        return [go.Figure()] * 3 + [None, error_message]
+
+if __name__ == "__main__":
+    app.run_server(debug=True)
